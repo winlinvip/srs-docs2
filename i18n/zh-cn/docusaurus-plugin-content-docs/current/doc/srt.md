@@ -66,6 +66,11 @@ srt_server {
     #       listen 10080 [::]:10080 192.168.1.100:10080 10.10.10.100:10080;
     # Overwrite by env SRS_SRT_SERVER_LISTEN
     listen 10080;
+    # Whether to accept bonded publishers, an encoder that sends one stream over several links (a libsrt
+    # socket group). Changing it needs a restart. See the Bonding section below.
+    # Overwrite by env SRS_SRT_SERVER_BONDING
+    # default: off
+    bonding off;
     # For detail parameters, please read wiki:
     # @see https://ossrs.io/lts/en-us/docs/v7/doc/srt#config
     # The maxbw is the max bandwidth of the sender side.
@@ -559,6 +564,47 @@ SRT over IPv6保持与IPv4相同的性能特征：
 - 基于网络条件的自适应码率
 - 具有数据包恢复的可靠传输
 - 在弱网络环境下比RTMP性能更好
+
+## Bonding
+
+SRS 8.0支持SRT绑定（Bonding）推流：编码器通过两条或更多链路发送同一路流，比如一条有线网络和一个蜂窝网络模块，
+这样某条链路断开时流不会中断。libsrt把它叫做套接字组（socket group）。组的模式由编码器选择：
+
+- **广播（Broadcast）** — 每条链路都传输完整的流，SRS保留每个包最先到达的那一份。
+- **备份（Backup）** — 一条链路传输流，它故障时由另一条链路接替。
+
+Bonding默认关闭。在配置文件中开启，或者设置`SRS_SRT_SERVER_BONDING=on`，然后重启SRS：
+
+```bash
+srt_server {
+    enabled on;
+    listen 10080;
+    bonding on;
+    passphrase your-secret-passphrase;
+}
+```
+
+普通的SRT客户端，比如FFmpeg和OBS，仍然和以前一样在同一个端口推流和播放。FFmpeg和OBS都不支持绑定，所以绑定推流的
+一方必须是基于libsrt套接字组（`srt_create_group`和`srt_connect_group`）开发的编码器或应用。
+
+使用前需要了解：
+
+- **只支持推流** — SRS拒绝播放模式的组，并在日志中说明Bonding只支持推流。播放器使用普通的SRT。
+- **一个服务器** — 一个组的所有链路必须连到同一个SRS，连到`listen`中的某一个端口。同一个端口的IPv4和IPv6监听
+  可以共用一个组，所以一条链路可以用IPv4，另一条用IPv6。
+- **最多8条链路** — SRS保留一个组的前8条链路，之后的链路都会被关闭。
+- **一个客户端** — 一个组推一路流，在HTTP API中显示为一个客户端，每个回调只调用一次。它的客户端IP，在API、回调和
+  [安全](./security.md)规则中，都是它第一条链路的地址。
+- **日志** — SRS在每条链路加入和离开组时打印日志，并在pithy print中打印组和每条链路的统计。
+- **所有链路断开** — 当所有链路都断开时，SRS关闭这个组。要重新推流，编码器必须创建一个新的组；libsrt不允许旧的组
+  重新连接。
+- **设置密码** — libsrt根据客户端发送的组ID把链路加入组。没有密码时，任何猜到一个正在推流的组ID的人，都可以给它
+  加一条链路。
+- **通过代理** — 所有链路必须到达同一个源站。一个[代理](./origin-cluster.md)可以做到。有多个代理时，请使用Redis负载
+  均衡；即使这样，同一时刻通过两个代理建立的两条链路，仍可能到达两个源站，编码器只会保留一条链路。在第一条链路连接
+  成功之后才连接的链路，会到达同一个源站。
+- **编译** — SRS编译的libsrt支持绑定。使用`--sys-srt=on`时，系统的libsrt必须开启绑定编译（`ENABLE_BONDING`），
+  否则开启bonding后SRS会监听失败。
 
 ## VLC
 
